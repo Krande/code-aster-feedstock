@@ -39,7 +39,7 @@ python_impl:
 python_min:
 - '3.11'
 scotch:
-- 7.0.11
+- 7.0.13
 target_platform:
 - win-64
 zlib:

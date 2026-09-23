@@ -63,8 +63,17 @@ def total_memory_mb():
 
 def build_known_failures(recipe_dir, src_dir):
     dest = osp.join(src_dir, "known_failures_win.list")
+    if os.environ.get("mpi", "nompi") == "nompi":
+        lists = ("known_failures.list", "known_failures_nompi.list", "known_failures_windows.list")
+    else:
+        lists = (
+            "known_failures.list",
+            "known_failures_mpi.list",
+            "known_failures_windows.list",
+            "known_failures_windows_mpi.list",
+        )
     with open(dest, "w", encoding="utf-8") as out:
-        for name in ("known_failures.list", "known_failures_nompi.list", "known_failures_windows.list"):
+        for name in lists:
             path = osp.join(recipe_dir, name)
             if osp.isfile(path):
                 out.write(open(path, encoding="utf-8").read())

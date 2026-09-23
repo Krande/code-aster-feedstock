@@ -1,6 +1,8 @@
 mpi:
   - nompi
-  - openmpi
+  - openmpi  # [not win]
+  # Windows: Intel MPI (the only MPI with parallel HDF5 / MKL BLACS on win-64)
+  - impi     # [win]
 
 openmpi:
   - '5'
@@ -10,3 +12,12 @@ fortran_compiler:           # [win]
   - ifx                     # [win]
 fortran_compiler_version:   # [win]
   - '2026.1'                # [win]
+
+# Windows: PT-SCOTCH for the Intel MPI build (impi_rt 2021.17) exists only for
+# scotch 7.0.13; the Windows MUMPS builds do not use SCOTCH, so no conflict.
+libscotch:     # [win]
+  - 7.0.13     # [win]
+scotch:        # [win]
+  - 7.0.13     # [win]
+libptscotch:   # [win]
+  - 7.0.13     # [win]

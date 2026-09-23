@@ -76,6 +76,15 @@ set "LDFLAGS=%LDFLAGS% med.lib medC.lib medfwrap.lib medimport.lib"
 set "INCLUDES_BIBC=%PREF_ROOT%/include %SRC_DIR:\=/%/bibfor/include %INCLUDES_BIBC%"
 set "DEFINES=H5_BUILT_AS_DYNAMIC_LIB _CRT_SECURE_NO_WARNINGS _SCL_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN ASTER_PLATFORM_MSVC64 ASTER_INT8"
 
+:: Intel MPI variant (mpi=impi): MUMPS-MPI (headers in include/, not
+:: include/mumps_seq), MKL ScaLAPACK/BLACS, PT-SCOTCH; no ParMETIS/PETSc on
+:: win-64 and a sequential libmed (parallel MED is disabled at configure time).
+set "ASTER_MPI_ARGS=--disable-mpi"
+if not "%mpi%"=="nompi" (
+  set "INCLUDES_MUMPS=%LIB_ROOT%/include"
+  set "ASTER_MPI_ARGS=--enable-mpi --disable-parmetis --metis-libs=metis --scotch-libs="esmumps scotch scotcherr ptscotch ptscotcherr""
+)
+
 :: tell config/ifort.py to take the activated conda ifx environment
 set "CONDA_BUILD_INTEL_FORTRAN=1"
 :: ifx activation only sets FC: expose its runtime import libs (ifconsol.lib, ...),
@@ -108,7 +117,7 @@ waf configure ^
   --enable-metis ^
   --enable-scotch ^
   --enable-mfront ^
-  --disable-mpi ^
+  %ASTER_MPI_ARGS% ^
   --enable-openmp ^
   --disable-petsc ^
   --maths-libs=auto ^

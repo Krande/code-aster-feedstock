@@ -41,8 +41,8 @@ source:
 
 build:
   number: ${{ build_num }}
-  # Windows: sequential only (no MPI MUMPS/PETSc build for ifx)
-  skip: osx or (win and mpi != 'nompi') or (python_impl == 'pypy')
+  # Windows: sequential, or Intel MPI (impi) without PETSc/ParMETIS/parallel MED
+  skip: osx or (win and mpi != 'nompi' and mpi != 'impi') or (python_impl == 'pypy')
 
 outputs:
   - package:
@@ -119,7 +119,7 @@ outputs:
             # stage raises "NameError: name 'yaml' is not defined".
             - pyyaml
         - waf ==2.1.5
-        - if: "mpi != 'nompi'"
+        - if: "mpi != 'nompi' and not win"
           then: ${{ mpi }}
       host:
         - python
@@ -150,17 +150,32 @@ outputs:
         - if: unix
           then: miss3d
         - metis
-        - hdf5 >=1.14 *${{ mpi }}*
-        - libmed * *${{ mpi }}*
         # ParaMEDMEM.CFEMDEC (code_aster.Coupling) requires medcoupling >= 9.16
-        - medcoupling >=9.16 *${{ mpi }}*
+        - if: win
+          then:
+            # win-64 has no MPI builds of libmed/medcoupling: sequential MED in
+            # both variants (the impi build disables parallel MED at configure time)
+            - hdf5 >=1.14 *nompi*
+            - libmed * *nompi*
+            - medcoupling >=9.16 *nompi*
+          else:
+            - hdf5 >=1.14 *${{ mpi }}*
+            - libmed * *${{ mpi }}*
+            - medcoupling >=9.16 *${{ mpi }}*
         - scipy
         - if: unix
           then: mumps-include
         # code_aster calls MUMPS through its Fortran interface: pick the ifx ABI build,
-        # which run-exports the matching mumps-seq ifx_*
-        - if: win
+        # which run-exports the matching mumps-seq/mumps-mpi ifx_*
+        - if: win and mpi == 'nompi'
           then: mumps-seq-fortran-devel * ifx_*
+        - if: win and mpi == 'impi'
+          then:
+            - mumps-mpi-fortran-devel * ifx_*
+            # the impi_rt the win-64 mumps-mpi/libptscotch are built with
+            - impi-devel 2021.17.0.*
+            - libptscotch * int64_*
+            - mpi4py
         - if: (mpi == 'nompi') and not win
           then:
             - mumps-seq
@@ -212,6 +227,8 @@ outputs:
             - intel-fortran-rt
             # bibfor.dll links the OpenMP runtime (libomp.dll) directly
             - llvm-openmp
+        - if: win and mpi == 'impi'
+          then: mpi4py
       run_exports:
         - ${{ pin_subpackage('code-aster', upper_bound='x.x') }}
 
