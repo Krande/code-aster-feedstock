@@ -32,8 +32,8 @@ source:
       - if: win
         then: patches/windows_msvc_ifx.patch
       # Windows Intel MPI: MPI configuration (impi with clang-cl/ifx, mpiexec
-      # probing, MKL ScaLAPACK/BLACS), LLP64 fixes in MPI-only code, guarded
-      # parallel MED (no MPI libmed on win-64)
+      # probing, MKL ScaLAPACK/BLACS), LLP64 fixes in MPI-only code, parallel
+      # MED detection (FERMETUR_17 when libmed is sequential)
       - if: win and mpi == 'impi'
         then: patches/windows_msvc_mpi.patch
   # code_aster prerequisites sources (only homard is built from it); 18.0.2+ requires version 20251026
@@ -46,7 +46,7 @@ source:
 
 build:
   number: ${{ build_num }}
-  # Windows: sequential, or Intel MPI (impi) without PETSc/ParMETIS/parallel MED
+  # Windows: sequential, or Intel MPI (impi) without PETSc/ParMETIS
   skip: osx or (win and mpi != 'nompi' and mpi != 'impi') or (python_impl == 'pypy')
 
 outputs:
@@ -156,14 +156,19 @@ outputs:
           then: miss3d
         - metis
         # ParaMEDMEM.CFEMDEC (code_aster.Coupling) requires medcoupling >= 9.16
-        - if: win
+        - if: win and mpi == 'nompi'
           then:
-            # win-64 has no MPI builds of libmed/medcoupling: sequential MED in
-            # both variants (the impi build disables parallel MED at configure time)
             - hdf5 >=1.14 *nompi*
             - libmed * *nompi*
             - medcoupling >=9.16 *nompi*
-          else:
+        # Windows Intel MPI: parallel HDF5/MED (mpi_impi) and ParaMEDMEM
+        - if: win and mpi == 'impi'
+          then:
+            - hdf5 >=1.14 mpi_impi_*
+            - libmed * impi_*
+            - medcoupling >=9.16 *mpi_impi*
+        - if: not win
+          then:
             - hdf5 >=1.14 *${{ mpi }}*
             - libmed * *${{ mpi }}*
             - medcoupling >=9.16 *${{ mpi }}*
@@ -178,7 +183,7 @@ outputs:
           then:
             - mumps-mpi-fortran-devel * ifx_*
             # the impi_rt the win-64 mumps-mpi/libptscotch are built with
-            - impi-devel 2021.17.0.*
+            - impi-devel 2021.17.2.*
             - libptscotch * int64_*
             - mpi4py
         - if: (mpi == 'nompi') and not win
