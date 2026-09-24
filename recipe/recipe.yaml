@@ -31,6 +31,11 @@ source:
       # Windows: MSVC (clang-cl) + Intel ifx toolchain, .def exports and pybind11 proxy modules
       - if: win
         then: patches/windows_msvc_ifx.patch
+      # Windows Intel MPI: MPI configuration (impi with clang-cl/ifx, mpiexec
+      # probing, MKL ScaLAPACK/BLACS), LLP64 fixes in MPI-only code, guarded
+      # parallel MED (no MPI libmed on win-64)
+      - if: win and mpi == 'impi'
+        then: patches/windows_msvc_mpi.patch
   # code_aster prerequisites sources (only homard is built from it); 18.0.2+ requires version 20251026
   # https://gitlab.com/codeaster-opensource-documentation/opensource-installation-development/-/blob/main/devel/changelog.md
   - if: unix

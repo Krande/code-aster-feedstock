@@ -1,0 +1,405 @@
+diff --git a/bibc/supervis/aster_mpi.c b/bibc/supervis/aster_mpi.c
+index 7cfd9a778a..96c9352924 100644
+--- a/bibc/supervis/aster_mpi.c
++++ b/bibc/supervis/aster_mpi.c
+@@ -122,7 +122,11 @@ void aster_mpi_init( const MPI_Fint init_comm_world ) {
+     // Pass communicator to PETSc
+     PETSC_COMM_WORLD = aster_world;
+ #endif
++#ifdef ASTER_PLATFORM_MSVC64
++    AS_ASSERT( atexit( aster_terminate ) == 0 );
++#else
+     AS_ASSERT( atexit( terminate ) == 0 );
++#endif
+     /* set the error handler */
+     AS_ASSERT( MPI_Comm_create_errhandler( errhdlr_func, &errhdlr ) == MPI_SUCCESS );
+     AS_ASSERT( MPI_Comm_set_errhandler( aster_world, errhdlr ) == MPI_SUCCESS );
+diff --git a/bibcxx/IOManager/MedFilePointer.cxx b/bibcxx/IOManager/MedFilePointer.cxx
+index 6afb5abefd..77bd415fd9 100644
+--- a/bibcxx/IOManager/MedFilePointer.cxx
++++ b/bibcxx/IOManager/MedFilePointer.cxx
+@@ -82,7 +82,7 @@ int MedFilePointer::open( const std::filesystem::path &filename, const MedFileAc
+ 
+ int MedFilePointer::openParallel( const std::filesystem::path &filename,
+                                   const MedFileAccessType &openType ) {
+-#ifdef ASTER_HAVE_MPI
++#if defined( ASTER_HAVE_MPI ) && defined( ASTER_HAVE_MED_PARALLEL )
+     MPI_Info info = MPI_INFO_NULL;
+     MPI_Comm comm = aster_get_comm_world()->id;
+     med_access_mode medAccessMode = MED_ACC_UNDEF;
+@@ -100,9 +100,13 @@ int MedFilePointer::openParallel( const std::filesystem::path &filename,
+     _isOpen = true;
+     _parallelOpen = true;
+     return 0;
++#elif defined( ASTER_HAVE_MPI )
++    throw std::runtime_error( "Parallel opening of MED files is not available: "
++                              "this build uses a sequential MED library" );
++    return 0;
+ #else
+     throw std::runtime_error( "Parallel opening not available in sequential" );
+     return 0;
+-#endif /* ASTER_HAVE_MPI */
++#endif /* ASTER_HAVE_MPI && ASTER_HAVE_MED_PARALLEL */
+ };
+ #endif
+diff --git a/bibcxx/IOManager/MedToAsterReader.cxx b/bibcxx/IOManager/MedToAsterReader.cxx
+index 0ee8371fcf..d1cc0b98f4 100644
+--- a/bibcxx/IOManager/MedToAsterReader.cxx
++++ b/bibcxx/IOManager/MedToAsterReader.cxx
+@@ -166,7 +166,8 @@ void MedToAsterReader::readIncompleteMeshFromMedFile( IncompleteMeshPtr &toRetur
+     }
+     const auto globNum = curMesh->getGlobalNodeNumberingAtSequence( -1, -1 );
+     if ( globNum.size() != 0 ) {
+-        toReturn->setLocalToGlobalNodeIds( globNum );
++        // med_int and ASTERINTEGER may be distinct 64-bit types (Windows LLP64)
++        toReturn->setLocalToGlobalNodeIds( VectorLong( globNum.begin(), globNum.end() ) );
+     } else {
+         VectorLong nodeGlobNum;
+         const auto size = toReturn->getNumberOfNodes();
+@@ -197,7 +198,7 @@ void MedToAsterReader::readParallelMeshFromMedFile( ParallelMeshPtr &toReturn,
+         const auto &curJoint = joints[i];
+         const auto &curName = curJoint->getName();
+         if ( curJoint->getCorrespondenceNumber() != 1 || curJoint->getStepNumber() != 1 ) {
+-            throw std::runtime_error( "Unexpected joint in med file " + std::string( filename ) );
++            throw std::runtime_error( "Unexpected joint in med file " + filename.string() );
+         }
+ 
+         domainSet.insert( curJoint->getOppositeDomain() );
+diff --git a/bibcxx/Meshes/ConnectionMesh.cxx b/bibcxx/Meshes/ConnectionMesh.cxx
+index 12ccdb01e4..9ab52e2041 100644
+--- a/bibcxx/Meshes/ConnectionMesh.cxx
++++ b/bibcxx/Meshes/ConnectionMesh.cxx
+@@ -641,7 +641,7 @@ VectorLong ConnectionMesh::getCells( const std::string name ) const {
+ VectorLong ConnectionMesh::getCells( const VectorString &names ) const {
+ 
+     if ( names.empty() ) {
+-        return irange( long( 0 ), long( getNumberOfCells() - 1 ) );
++        return irange( ASTERINTEGER( 0 ), ASTERINTEGER( getNumberOfCells() - 1 ) );
+     }
+ 
+     std::vector< VectorLong > cells;
+diff --git a/bibcxx/Meshes/MeshBalancer.cxx b/bibcxx/Meshes/MeshBalancer.cxx
+index fc6df6554c..bc45e99739 100644
+--- a/bibcxx/Meshes/MeshBalancer.cxx
++++ b/bibcxx/Meshes/MeshBalancer.cxx
+@@ -235,7 +235,8 @@ ParallelMeshPtr MeshBalancer::applyBalancingStrategy( const VectorInt &newLocalN
+     }
+ 
+     auto globNodeNumVect2 = globNodeNumVect;
+-    std::for_each( globNodeNumVect2.begin(), globNodeNumVect2.end(), &decrement< long int > );
++    std::for_each( globNodeNumVect2.begin(), globNodeNumVect2.end(),
++                   &decrement< decltype( globNodeNumVect2 )::value_type > );
+ 
+     convertLastGhostLayerToLocal( globNodeNumVect2 );
+ 
+diff --git a/bibcxx/ParallelUtilities/MeshConnectionGraph.cxx b/bibcxx/ParallelUtilities/MeshConnectionGraph.cxx
+index 3803473777..1101fe2d5c 100644
+--- a/bibcxx/ParallelUtilities/MeshConnectionGraph.cxx
++++ b/bibcxx/ParallelUtilities/MeshConnectionGraph.cxx
+@@ -250,7 +250,9 @@ bool MeshConnectionGraph::debugCheck() const {
+ 
+         for ( int j = 0; j < edgeNb; ++j ) {
+             const auto curNodeId = _edges[startVertId + j];
+-            const int procId = std::min( curNodeId / nbNodes0, (long int)nbProcs - 1 );
++            // ASTERINTEGER, not long int: long is 32-bit on Windows (LLP64)
++            const int procId = std::min< ASTERINTEGER >( curNodeId / nbNodes0,
++                                                         ASTERINTEGER( nbProcs ) - 1 );
+             nodeConnex.insert( curNodeId );
+             if ( curNodeId >= startIndex && curNodeId < endIndex ) {
+                 if ( procId != rank ) {
+diff --git a/bibfor/echange/as_mpfope.F90 b/bibfor/echange/as_mpfope.F90
+index d89026a25e..2489b29b50 100644
+--- a/bibfor/echange/as_mpfope.F90
++++ b/bibfor/echange/as_mpfope.F90
+@@ -37,8 +37,12 @@ subroutine as_mpfope(fid, nom, acces, comm, cret)
+     med_int :: acces4, comm4, info4, cret4
+ #endif
+     cret = 0
++#if defined(ASTER_HAVE_MPI) && !defined(ASTER_HAVE_MED_PARALLEL)
++!   MPI build against a sequential MED library (no mpfope)
++    call utmess('F', 'FERMETUR_17')
++#endif
+     if (cret .eq. 0) then
+-#ifdef ASTER_HAVE_MPI
++#if defined(ASTER_HAVE_MPI) && defined(ASTER_HAVE_MED_PARALLEL)
+ #if !ASTER_MED_SAME_INT_IDT
+         acces4 = to_med_int(acces)
+         comm4 = to_med_int(comm)
+diff --git a/code_aster/Messages/fermetur.py b/code_aster/Messages/fermetur.py
+index 892967a49c..d52fd676dc 100644
+--- a/code_aster/Messages/fermetur.py
++++ b/code_aster/Messages/fermetur.py
+@@ -122,6 +122,12 @@ La bibliothèque "METIS" n'est pas installée dans cette version de Code_Aster.
+         """
+ Cette fonctionnalité nécessite que la bibliothèque "PETSc" ait été construite
+ avec le support du préconditionneur "%(k1)s".
++"""
++    ),
++    17: _(
++        """
++La lecture ou l'écriture parallèle des fichiers MED n'est pas disponible :
++cette version de Code_Aster utilise une bibliothèque "MED" séquentielle.
+ """
+     ),
+ }
+diff --git a/data/wscript b/data/wscript
+index 37f14a8346..71910fd25f 100644
+--- a/data/wscript
++++ b/data/wscript
+@@ -627,6 +627,9 @@ def check_mpiexec(self):
+     # equivalent to "mpiexec --prefix <path>" + change PATH and LD_LIBRARY_PATH
+     mpiexec = "mpiexec"
+     root_option = []
++    # program used to probe mpiexec flags: 'echo' is a cmd.exe builtin on
++    # Windows, Intel MPI's mpiexec can not start it
++    probe = "hostname" if sys.platform == "win32" else "echo"
+     try:
+         user = getpass.getuser()
+     except KeyError:
+@@ -635,7 +638,7 @@ def check_mpiexec(self):
+         if (
+             self._call_cmd(
+                 "Check for mpiexec flag '--allow-run-as-root'",
+-                [mpiexec, "--allow-run-as-root", "echo"],
++                [mpiexec, "--allow-run-as-root", probe],
+             )
+             == 0
+         ):
+@@ -658,7 +661,7 @@ def check_mpiexec(self):
+         narg = []
+         if (
+             self._call_cmd(
+-                "Check for mpiexec flag '-n N'", self.env["base_mpiexec"] + ["-n", "1", "echo"]
++                "Check for mpiexec flag '-n N'", self.env["base_mpiexec"] + ["-n", "1", probe]
+             )
+             == 0
+         ):
+@@ -666,7 +669,7 @@ def check_mpiexec(self):
+             mpicmd.extend(["-n", "{mpi_nbcpu}"])
+         elif (
+             self._call_cmd(
+-                "Check for mpiexec flag '-np N'", self.env["base_mpiexec"] + ["-np", "1", "echo"]
++                "Check for mpiexec flag '-np N'", self.env["base_mpiexec"] + ["-np", "1", probe]
+             )
+             == 0
+         ):
+@@ -675,17 +678,22 @@ def check_mpiexec(self):
+         if (
+             self._call_cmd(
+                 "Check for mpiexec flag '-np N'",
+-                self.env["base_mpiexec"] + narg + ["--bind-to", "none", "echo"],
++                self.env["base_mpiexec"] + narg + ["--bind-to", "none", probe],
+             )
+             == 0
+         ):
+             mpicmd.extend(["--bind-to", "none"])
+ 
+-        for opt in ("--tag-output", "-print-rank-map", "-prepend-rank", "-ordered-output"):
++        output_opts = ("--tag-output", "-print-rank-map", "-prepend-rank", "-ordered-output")
++        if sys.platform == "win32":
++            # Intel MPI: -ordered-output holds each rank's output until it
++            # exits, -print-rank-map adds a header to the output
++            output_opts = ("--tag-output", "-prepend-rank")
++        for opt in output_opts:
+             if (
+                 self._call_cmd(
+                     "Check for mpiexec flag '{0}'".format(opt),
+-                    self.env["base_mpiexec"] + narg + [opt, "echo"],
++                    self.env["base_mpiexec"] + narg + [opt, probe],
+                 )
+                 == 0
+             ):
+@@ -704,6 +712,13 @@ def check_mpi_get_rank(self):
+     # srun vs mpiexec
+     if self.options.use_srun:
+         rank_id = 'test ! -z "${SLURM_STEPID}" && echo ${SLURM_PROCID}'
++    elif sys.platform == "win32":
++        # evaluated by cmd.exe (shell=True): an undefined variable is echoed
++        # as is, which gives the expected -1 when not run under mpiexec
++        out = self.cmd_and_log(self.env["base_mpiexec"] + ["cmd.exe", "/d", "/c", "set"])
++        rank_id = "echo %OMPI_COMM_WORLD_RANK%"
++        if "PMI_RANK" in out:
++            rank_id = "echo %PMI_RANK%"
+     else:
+         # default to openmpi
+         out = self.cmd_and_log(self.env["base_mpiexec"] + ["env"])
+diff --git a/run_aster/run_aster_main.py b/run_aster/run_aster_main.py
+index cf6b1ffdf0..c9dd9d37c9 100644
+--- a/run_aster/run_aster_main.py
++++ b/run_aster/run_aster_main.py
+@@ -452,7 +452,9 @@ def main(argv=None):
+             logger.warning(
+                 "If MPI_Abort is called during execution, result files could not be copied."
+             )
+-            run_aster = osp.join(RUNASTER_ROOT, "bin", "run_aster")
++            run_aster = osp.join(
++                RUNASTER_ROOT, "bin", "run_aster" + (".bat" if RUNASTER_PLATFORM == "win" else "")
++            )
+             try:
+                 expdir = create_temporary_dir(dir=os.fspath(Path.home() / ".tmp_run_aster"))
+             except (OSError, KeyError):
+diff --git a/waftools/mathematics.py b/waftools/mathematics.py
+index 5a2516eaef..3478877319 100644
+--- a/waftools/mathematics.py
++++ b/waftools/mathematics.py
+@@ -145,6 +145,11 @@ def detect_mkl(self):
+             # scalapack = "mkl_scalapack" + suffix
+             # blacs = "mkl_blacs_intelmpi" + suffix
+             scalapack = "scalapack"
++            if self.env.CXX_NAME == "msvc":
++                # Windows: MKL ScaLAPACK/BLACS (BLACS dispatches to Intel MPI);
++                # only the MUMPS DLLs call them, they link these themselves
++                scalapack = "mkl_scalapack" + suffix
++                blacs = "mkl_blacs" + suffix
+     else:
+         if self.get_define("ASTER_HAVE_OPENMP"):
+             thread = "mkl_gnu_thread"
+@@ -158,6 +163,10 @@ def detect_mkl(self):
+         interf += "_dll"
+         thread += "_dll"
+         core += "_dll"
++        if scalapack.startswith("mkl_"):
++            scalapack += "_dll"
++        if blacs:
++            blacs += "_dll"
+     libs.append(interf)
+     libs.append(thread)
+     libs.append(core)
+diff --git a/waftools/med_cfg.py b/waftools/med_cfg.py
+index 7fe7c92160..4b92462993 100644
+--- a/waftools/med_cfg.py
++++ b/waftools/med_cfg.py
+@@ -239,6 +239,41 @@ def check_med(self):
+     self.check_sizeof_med_int()
+     self.check_sizeof_med_idt()
+     self.check_med_python()
++    self.check_med_parallel()
++
++
++@Configure.conf
++def check_med_parallel(self):
++    """Check for the parallel MED API (MEDparFileOpen) in a MPI build.
++
++    Parallel MED libraries are assumed on POSIX platforms. On Windows only a
++    sequential libmed may be available: ParallelMesh reading/writing is then
++    disabled at runtime instead of failing at link time.
++    """
++    if not self.env.BUILD_MPI:
++        return
++    if not Utils.is_win32:
++        self.define("ASTER_HAVE_MED_PARALLEL", 1)
++        return
++    fragment = "\n".join(
++        [
++            "#include <mpi.h>",
++            "#include <med.h>",
++            "int main(void){",
++            "    med_idt fid = MEDparFileOpen(",
++            '        "x.med", MED_ACC_RDONLY, MPI_COMM_WORLD, MPI_INFO_NULL);',
++            "    return (int)(fid < 0);",
++            "}",
++            "",
++        ]
++    )
++    if self.check_cc(
++        fragment=fragment,
++        use="MED HDF5 MPI Z",
++        mandatory=False,
++        msg="Checking for parallel MED (MEDparFileOpen)",
++    ):
++        self.define("ASTER_HAVE_MED_PARALLEL", 1)
+ 
+ 
+ @Configure.conf
+diff --git a/waftools/parallel.py b/waftools/parallel.py
+index 13b7b55f01..e3d1c9836c 100644
+--- a/waftools/parallel.py
++++ b/waftools/parallel.py
+@@ -152,8 +152,12 @@ def load_compilers_mpi(self):
+     )
+     # raise ValueError(str(self.env.CC) + "  ///  " + str(self.env.CXX))
+ 
++    if Utils.is_win32:
++        # Windows (clang-cl + ifx): there is no mpicc/mpif90 wrapper to query,
++        # do what the wrappers would do for every target.
++        self.load_mpi_windows()
+     # We won't alter environment if Intel compiler is detected...
+-    if not self.env.CC_IS_INTEL:
++    elif not self.env.CC_IS_INTEL:
+         msg = "Checking C compiler package (collect configuration flags)"
+         if not check(path=self.env.CC, msg=msg):
+             self.fatal("Unable to configure the parallel environment for C compiler")
+@@ -161,7 +165,7 @@ def load_compilers_mpi(self):
+         del self.env["LINKFLAGS_MPI"]
+ 
+     # We won't alter environment if Intel compiler is detected...
+-    if not self.env.FC_IS_INTEL:
++    if not self.env.FC_IS_INTEL and not Utils.is_win32:
+         msg = "Checking Fortran compiler package (collect configuration flags)"
+         if not check(path=self.env.FC, msg=msg):
+             self.fatal("Unable to configure the parallel environment for FORTRAN compiler")
+@@ -174,6 +178,34 @@ def load_compilers_mpi(self):
+     self.check_mpi_fortran_interface()
+ 
+ 
++@Configure.conf
++def load_mpi_windows(self):
++    """Windows: add Intel MPI (conda impi-devel) to every target.
++
++    The MPI root is taken from I_MPI_ROOT (set by the impi activation script),
++    else the conda Library prefix. Only the C interface is linked (impi.lib):
++    code_aster Fortran uses mpif.h for PARAMETER constants only.
++    """
++    root = os.environ.get("I_MPI_ROOT") or os.environ.get("LIBRARY_PREFIX", "")
++    self.start_msg("Checking for Intel MPI (Windows)")
++    incdir = osp.join(root, "include")
++    libdir = osp.join(root, "lib")
++    if not (osp.isfile(osp.join(incdir, "mpi.h")) and osp.isfile(osp.join(libdir, "impi.lib"))):
++        self.end_msg("not found in %r" % root, "RED")
++        self.fatal("Intel MPI not found: define I_MPI_ROOT")
++    self.end_msg(root)
++    # the C++ bindings (mpicxx.h, impicxx.lib) are not used
++    defines = ["MPICH_SKIP_MPICXX", "OMPI_SKIP_MPICXX"]
++    self.env.append_unique("INCLUDES", [incdir])
++    self.env.append_unique("LIBPATH", [libdir])
++    self.env.append_unique("LIB", ["impi"])
++    self.env.append_unique("DEFINES", defines)
++    self.env["INCLUDES_MPI"] = [incdir]
++    self.env["LIBPATH_MPI"] = [libdir]
++    self.env["LIB_MPI"] = ["impi"]
++    self.env["DEFINES_MPI"] = defines
++
++
+ @Configure.conf
+ def check_openmp(self):
+     opts = self.options
+@@ -278,6 +310,11 @@ def check_vmsize(self):
+     """Check for VmSize 'bug' with MPI or not."""
+     if not self.get_define("ASTER_HAVE_MPI"):
+         return
++    if Utils.is_win32:
++        # the probe reads /proc/<pid>/status; Intel MPI and MS-MPI both
++        # support singleton MPI_Init, so mpiexec is not required either
++        self.msg("Checking measure of VmSize during MPI_Init", "skipped (Windows)", color="YELLOW")
++        return
+     self.start_msg("Checking measure of VmSize during MPI_Init")
+     try:
+         prg = osp.join(self.bldnode.abspath(), "test_mpi_init_" + str(os.getpid()))
+diff --git a/waftools/scotch.py b/waftools/scotch.py
+index 1ca7218ed1..dd952d459c 100644
+--- a/waftools/scotch.py
++++ b/waftools/scotch.py
+@@ -67,8 +67,12 @@ def configure(self):
+             raise
+     else:
+         self.define("ASTER_HAVE_SCOTCH", 1)
+-        if self.env.BUILD_MPI:
++        # PT-SCOTCH only if it is linked (--scotch-libs without ptscotch, e.g.
++        # on Windows where no PT-SCOTCH matches the Intel MPI in use)
++        if self.env.BUILD_MPI and "ptscotch" in Utils.to_list(self.options.scotch_libs or ""):
+             self.define("ASTER_HAVE_PTSCOTCH", 1)
++        elif self.env.BUILD_MPI:
++            self.msg("Checking for PT-SCOTCH", "no (not in --scotch-libs)", color="YELLOW")
+ 
+ 
+ ###############################################################################
