@@ -55,7 +55,6 @@ cont001d
 cont002p
 hrom001f
 hrom001j
-hsnv100z
 mesh001c
 mesh001k
 ssnp15f
@@ -67,16 +66,6 @@ zzzz155i
 zzzz155j
 zzzz155n
 zzzz155o
-zzzz178d
-zzzz178e
-zzzz216b
-zzzz216c
-zzzz216d
-zzzz216e
-zzzz216f
-zzzz216i
-zzzz216j
-zzzz216m
 zzzz291d
 zzzz421a
 zzzz421b
@@ -104,6 +93,17 @@ zzzz513f
 zzzz513g
 
 # ParaMEDMEM (MPI coupling): no MPI build of medcoupling on win-64
+hsnv100z
+zzzz178d
+zzzz178e
+zzzz216b
+zzzz216c
+zzzz216d
+zzzz216e
+zzzz216f
+zzzz216i
+zzzz216j
+zzzz216m
 
 
 # parallel MUMPS renumbering (PT-SCOTCH/ParMETIS inside MUMPS): the win-64
